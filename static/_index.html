@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="ja" prefix="og: http://ogp.me/ns#">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width">
+  <meta property="og:url" content="https://siramatu.github.io/brigade-visualizer/" />
+  <meta property="og:title" content="CivicTech 俯瞰図鑑" />
+  <meta property="og:description" content="各地シビックテックコミュニティの特徴と関連性を分かりやすく伝えたい" />
+  <meta property="og:image" content="https://siramatu.github.io/brigade-visualizer/img/ogp.png" />
+  <title>CivicTech 俯瞰図鑑</title>
+  <!-- import CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/element-ui/lib/theme-chalk/index.css">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.css" rel="stylesheet">
+  <style type="text/css">
+    #mynetwork {
+      width: 99%;
+      height: 500px;
+      border: 1px solid #d0d0d0;
+    }
+    #keywordnetwork {
+      width: 99%;
+      height: 500px;
+      border: 1px solid #52B4CD;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <el-header><img src="./img/logo.png" height="65px"></el-header>
+    <el-main>
+      <el-tabs v-model="activeName" @tab-click="handleClick">
+        <el-tab-pane label="Top" name="top">
+            <el-select v-model="selectedSource" placeholder="選択してください" @change="handleSelectSource">
+              <el-option
+                v-for="source in sources"
+                :key="source.value"
+                :label="source.label"
+                :value="source.value">
+              </el-option>
+            </el-select>
+            <el-select v-model="selectedValue" :disabled="this.isSelectedBrigades" placeholder="選択してください">
+              <el-option
+                v-for="item in brigades[selectedSource]"
+                :key="item.name"
+                :label="item.name"
+                :value="item.name">
+              </el-option>
+            </el-select>
+          <el-button v-on:click="draw()" v-loading.fullscreen.lock="fullscreenLoading">draw</el-button>
+          <br><br>
+          <div id="mynetwork"></div>
+          <p>選択したコミュニティに近い上位{{max_node}}件のコミュニティを表示しています</p>
+          <p>Embedding Projectorで見る場合は<a target="_blank" href="https://projector.tensorflow.org/?config=https://raw.githubusercontent.com/siramatu/brigade-visualizer/master/embedding_projector_config.json">こちら</a>をクリック</p>
+        </el-tab-pane>
+        <el-tab-pane label="Keyword" name="keyword">
+            <el-select v-model="selectedKeyword" placeholder="選択してください">
+              <el-option
+                v-for="item in keywords"
+                :key="item.keyword"
+                :label="item.keyword"
+                :value="item.keyword">
+              </el-option>
+            </el-select>
+          <el-button v-on:click="drawKeyword()" v-loading.fullscreen.lock="fullscreenLoading">draw</el-button>
+          <br><br>
+          <div id="keywordnetwork"></div>
+          <p>選択したキーワードに関心度の高い上位{{max_node}}件のコミュニティを表示しています</p>
+          <p>Embedding Projectorで見る場合は<a target="_blank" href="https://projector.tensorflow.org/?config=https://raw.githubusercontent.com/siramatu/brigade-visualizer/master/embedding_projector_config.json">こちら</a>をクリック</p>
+        </el-tab-pane>
+        <el-tab-pane label="Entry" name="entry">
+          コミュニティを登録したい方はこちらのアンケートにお答えください
+          <iframe width="100%" height="500" src="https://forms.gle/21TLsqKQQLTaCHKd6" frameborder="0"></iframe>
+        </el-tab-pane>
+        <el-tab-pane label="About" name="about">
+          <iframe width="100%" height="500" src="https://hackmd.io/@TGL6KqgYTmyO2qgobnL2pg/Hy4uJ5CLD/" frameborder="0"></iframe>
+        </el-tab-pane>
+      </el-tabs>
+      </el-main>
+      <el-dialog :visible.sync="visible" title="message">
+        <p>{{message}}</p>
+      </el-dialog>
+  </div>
+</body>
+  <!-- import Vue before Element -->
+  <script src="https://cdn.jsdelivr.net/npm/vue"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.js"></script>
+  <!-- import JavaScript -->
+  <script src="https://unpkg.com/element-ui/lib/index.js"></script>
+  <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+  <script>
+    var LENGTH_BRIGADE = 8000, //コミュニティ間の距離の重み
+    LENGTH_KEYWORD = 100,//コミュニティ-キーワード間の距離の重み
+    MAX_NODE = 5; //表示件数
+    new Vue({
+      el: '#app',
+      data: function() {
+        return { 
+            visible: false ,
+            selectedSource:'',
+            selectedValue:'',
+            selectedKeyword:'',
+            max_node:MAX_NODE,
+            message:'',
+            activeName: 'top',
+            fullscreenLoading: false,
+            // いくつかのブリゲードでは，クローリングが間に合わなかったため，クローリング結果とアンケート結果では，表示可能なブリゲード数が異なる
+            sources: [
+              {value: "questionnaire", label: "アンケート結果"},
+              {value: "crawling", label: "クローリング結果"},
+            ],
+            brigades: {
+              "questionnaire": null,
+              "crawling": null
+            },
+            isSelectedBrigades: true,
+            keywords:null,
+            brigade_distance:{
+              "questionnaire": null,
+              "crawling": null
+            },
+            brigade_keyword_distance:null
+        }
+      },
+      methods: {
+        handleClick(tab, event) {
+            console.log(tab, event);
+        },
+        handleSelectSource(select){
+          console.log(select, event);
+          this.isSelectedBrigades = false;
+          this.selectedValue = '';
+        },
+        draw: function() {//描画処理
+          console.log("draw***********************");
+          //入力チェック
+          if (this.selectedValue == '') {
+            this.message = "コミュニティを選択して下さい";
+            this.visible = true;
+            return;
+          }
+
+          this.fullscreenLoading = true;//描画中
+
+          //選択されたコミュニティと距離の近いコミュニティを取得する
+          let bg_map = this.selectedBrigade(MAX_NODE);
+
+          //ネットワーク図の描画
+          this.drawNetwork(bg_map,"mynetwork",this.selectedValue);
+
+        },
+        drawKeyword:function() {
+          console.log("drawKeyword***********************");
+          //入力チェック
+          if (this.selectedKeyword == '') {
+            this.message = "キーワードを選択して下さい";
+            this.visible = true;
+            return;
+          }
+
+          this.fullscreenLoading = true;//描画中
+
+          //選択されたキーワードと距離の近いコミュニティを取得する
+          let bg_map = this.selectedBrigadeKeyword(MAX_NODE);
+
+          //ネットワーク図の描画
+          this.drawNetwork(bg_map,"keywordnetwork",this.selectedKeyword);
+        },
+        selectedBrigade:function(max_cnt) {
+          //選択されたコミュニティと距離の近いコミュニティを取得する
+          //let bg_arr = []
+          let bg_map = new Map();
+          bg_map.set(this.selectedValue,'1.0');
+          let rows = this.brigade_distance[this.selectedSource];
+          //console.log("rows: "+rows.length);
+
+          rows.forEach(col => {
+            if (this.selectedValue === col.civicname1){
+              bg_map.set(col.civicname2, col.distance);//to
+            }
+            else if(this.selectedValue === col.civicname2){
+              bg_map.set(col.civicname1, col.distance);//from
+            }
+          });
+
+          return this.filterBrigade(bg_map,max_cnt+1);//自分のコミュニティを含むためcnt+1
+        },
+        selectedBrigadeKeyword:function(max_cnt) {
+          console.log("selectedBrigadeKeyword***********************");
+          //選択されたキーワードと距離の近いコミュニティを取得する
+          //let bg_arr = []
+          let bg_map = new Map();
+          //bg_map.set(this.selectedValue,'1.0');
+          let rows = this.brigade_keyword_distance;
+          //console.log("rows:"+rows.length);
+
+          rows.forEach(col => {
+            // console.log(this.selectedKeyword+":"+col.keyword+":"+(this.selectedKeyword === col.keyword));
+            if (this.selectedKeyword === col.keyword){
+              // console.log(col.civicname+" : "+col.distance);
+              bg_map.set(col.civicname, col.distance);//to
+            }
+          });
+
+          return this.filterBrigade(bg_map,max_cnt);
+        },
+        filterBrigade:function(bg_map,max_cnt) {
+          //valueで並び替え
+          Array.from(bg_map.keys()).sort(
+            function (a,b){
+                return parseFloat(bg_map.get(a)) - parseFloat(bg_map.get(b))
+              }
+            );
+          let cnt = 0;
+          for (var key of bg_map.keys()) {
+            //console.log(key+":"+bg_map.get(key));
+            if (cnt >= max_cnt) {//上位のみ表示
+              bg_map.delete(key);//表示しないものは削除
+            }
+            cnt++;
+          }
+          return bg_map;
+        },
+        drawNetwork:function(bg_map,container_id,selected) {
+          // Create a data table with nodes.
+          var nodes = [];
+          // Create a data table with links.
+          var edges = [];
+
+          //コミュニティのプロット
+          for (var key of bg_map.keys()) {
+            nodes.push({ id: key, label: key, group: (key == selected)?"selected":"brigade", value: 10 });
+          }
+
+          // コミュニティ間の距離
+          // クローリング結果に関しては，文章の中から重要となる単語を抜き出していないので．
+          // keywordに関しては，アンケート結果のみを用いる．
+          if(this.activeName === "top"){
+            rows = this.brigade_distance[this.selectedSource];
+          }
+          else if(this.activeName === "keyword"){
+            rows = this.brigade_distance["questionnaire"];
+          }
+          rows.forEach(col => {
+            if (!bg_map.has(col.civicname1)&&!bg_map.has(col.civicname2)) {
+              // continue;
+              // See: https://masteringjs.io/tutorials/fundamentals/foreach-continue
+              return;
+            }
+            edges.push({
+              from: col.civicname1,
+              to: col.civicname2,
+              length: LENGTH_BRIGADE * (1-parseFloat(col.distance)),
+              width: 1,
+              label: col.distance,
+              smooth:true,
+            });
+          });
+
+          if (this.activeName === "keyword" || this.selectedSource === "questionnaire"){
+            //コミュニティとキーワード間の距離
+            let ky_map = new Map();
+            rows = this.brigade_keyword_distance;
+            rows.forEach(col => {
+              if (!bg_map.has(col.civicname)){
+                // continue;
+                // See: https://masteringjs.io/tutorials/fundamentals/foreach-continue
+                return;
+              } 
+              //console.log(col.civicname);
+              edges.push({
+                from: col.civicname,
+                to: col.keyword,
+                length: LENGTH_KEYWORD * (1-parseFloat(col.distance)),
+                width: 1,
+                smooth:true,
+              });
+              ky_map.set(col.keyword,'');//keyword
+            });
+
+            //キーワードノードをプロット
+            rows = this.keywords;
+            for (let i=0; i<rows.length; i++) {
+              let name = rows[i].keyword;
+              if (!ky_map.has(name)) continue;
+              nodes.push({ id: name, label: name, group: (name == selected)?"selected_keyword":"keyword", value: 5 });
+            }
+          }
+
+          // create a network
+          var container = document.getElementById(container_id);
+          var data = {
+            nodes: nodes,
+            edges: edges,
+          };
+          var options = {
+            nodes: {
+              scaling: {
+                min: 16,
+                max: 32,
+              },
+            },
+            edges: {
+              color: "#dddddd",
+              smooth: true,
+            },
+            physics: {
+              barnesHut: { gravitationalConstant: -30000 },
+              stabilization: { iterations: 2500 },
+            },
+            groups: {
+              selected: {
+                shape: "star",
+                color: "#FF0000", // orange
+                font: "50px arial",
+              },
+              brigade: {
+                shape: "triangle",
+                color: "#FF9900", // orange
+                font: "40px arial",
+              },
+              keyword: {
+                shape: "dot",
+                color: "#409EFF", // blue
+                font: "32px arial #409EFF",
+              },
+              selected_keyword: {
+                shape: "dot",
+                color: "#FF0000", // orange
+                font: "40px arial #FF0000",
+              },
+            },
+          };
+          network = new vis.Network(container, data, options);
+          network.on("afterDrawing", () => {this.fullscreenLoading = false;});
+        },
+        sortKeyword:function(keywords){
+          let arr = keywords;
+          if (arr) {
+            //nameで並び替え
+            arr = Array.from(keywords).sort(
+              function (a,b){
+                  //console.log(a.keyword+":"+b.keyword+":"+((a.keyword > b.keyword) ? 1 : -1));
+                  return ((a.keyword > b.keyword) ? 1 : -1);
+                }
+              );
+          }
+          return arr;
+        },
+      },
+      mounted: function () {
+        //JSONデータの読み込み
+        axios.get("./json/brigades.json").then(response => (this.brigades["questionnaire"] = response.data));
+        axios.get("./json/brigades_crawling.json").then(response => (this.brigades["crawling"] = response.data));
+        axios.get("./json/keywords.json").then(response => (this.keywords = this.sortKeyword(response.data)));
+
+        axios.get("./json/brigade-distance-bert.json").then(response => (this.brigade_distance["questionnaire"] = response.data));
+        axios.get("./json/brigade-distance-bert_crawling.json").then(response => (this.brigade_distance["crawling"] = response.data));
+        axios.get("./json/brigade-keyword-distance-bert.json").then(response => (this.brigade_keyword_distance = response.data));
+
+        // bertを用いないで計算したベクトルにする場合は以下をコメントアウト
+        // axios.get("./json/brigade-distance.json").then(response => (this.brigade_distance = response.data));
+        // axios.get("./json/brigade-keyword-distance.json").then(response => (this.brigade_keyword_distance = response.data));
+      }
+    })
+  </script>
+</html>
