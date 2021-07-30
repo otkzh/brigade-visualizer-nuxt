@@ -66,9 +66,9 @@
           <v-btn
             color="primary"
             nuxt
-            to="/inspire"
+            to="/network-sample"
           >
-            Continue
+            sample
           </v-btn>
         </v-card-actions>
       </v-card>
