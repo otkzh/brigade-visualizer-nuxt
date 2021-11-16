@@ -16,7 +16,7 @@
     "core-js": "^3.16.0",
     "nuxt": "^2.15.7",
     "vue-visjs": "^0.6.0",
-    "vuetify": "^2.5.8"
+    "vuetify": "^2.6.0"
   },
   "devDependencies": {
     "@babel/eslint-parser": "^7.14.9",
